@@ -1,11 +1,11 @@
-# Compare Gibbs sampling in numba vs JAX for an Ising model on a 2D lattice
+# Compare Gibbs sampling with CPU vs numba vs JAX for an Ising model on a 2D lattice
 
 import numba as nb
 import numpy as np
 import time
-from jax.scipy.special import logsumexp
 from functools import partial
 
+from jax.scipy.special import logsumexp
 from jax import jit, random
 from jax.lax import dynamic_slice, dynamic_update_slice, scan
 from jax.nn import sigmoid
@@ -40,6 +40,40 @@ def logZ_estimate(S):
     logZ = -logsumexp(energy) + d * np.log(2) + np.log(n_samples)
     return float(logZ)
 
+
+#####################################
+###### Gibbs sampling on CPU ########
+#####################################
+
+def sigmoid_cpu(x):
+    if x > 0:
+        x = np.exp(x)
+        return x / (1 + x)
+    else:
+        return 1 / (1 + np.exp(-x))
+
+def gibbs_ising_cpu(W, n_samples, n_steps=1000):
+    # The result is reflected in S, which is updated in place
+    d = W.shape[0]
+    S = 2 * (np.random.rand(n_samples, d) < 0.5).astype(np.float64) - 1
+
+    assert W.shape == (d, d)
+    assert (np.diag(W) == 0).all()
+    assert (W == W.T).all()
+
+    g = S.dot(W.T)  # size N_samples x d, g_ij = x^{(i)}^T w_j
+    for step in range(n_steps):
+        for j in np.random.permutation(d):
+            delta = -2 * g[:, j : j + 1] * S[:, j : j + 1]
+            threshold = np.vectorize(sigmoid_cpu)(delta)  # p(switch_j | x_{-j}) = sigmoid(- 2 * x_j * g_j)
+            flip = (np.random.rand(n_samples, 1) < threshold).astype(np.float64)
+
+            # Update S
+            S[:, j : j + 1] = (1 - 2 * flip) * S[:, j :j + 1]
+
+            # Update g
+            g += flip * 2 * S[:, j : j + 1] * W[j :j + 1]
+    return S
 
 #####################################
 ###### Gibbs sampling in numba ######
@@ -140,7 +174,13 @@ if __name__=="__main__":
     # Simulate Ising model
     W = ising_matrix(grid_side)
 
-    # Run both methods twice to use jitted code
+    # CPU
+    start = time.time()
+    S0 = gibbs_ising_cpu(W, n_samples=n_samples, n_steps=n_steps)
+    t_cpu = time.time() - start
+    print(f"Sampling time on CPU: {t_cpu:.3f}s")
+
+    # Run numba and JAX twice to use jitted code
     # Numba
     _ = gibbs_ising_numba(W, n_samples=n_samples, n_steps=n_steps)
     start = time.time()
@@ -155,8 +195,11 @@ if __name__=="__main__":
     S2.block_until_ready()
     t_jax = time.time() - start
     print(f"Sampling time with JAX: {t_jax:.3f}s")
-    print(f"JAX speed up: {t_numba / t_jax:.3f}x")
 
-    # Check that both methods give a similar estimate of the log-partition function
-    print(f"\nNumba log-partition function estimate: {logZ_estimate(S1):.2f}")
+    print(f"\nNumba / CPU speed up: {t_cpu / t_numba:.3f}x")
+    print(f"JAX / numba speed up: {t_numba / t_jax:.3f}x")
+
+    # Check that all methods give a similar estimate of the log-partition function
+    print(f"\nCPU log-partition function estimate: {logZ_estimate(S0):.2f}")
+    print(f"Numba log-partition function estimate: {logZ_estimate(S1):.2f}")
     print(f"JAX log-partition function estimate: {logZ_estimate(S2):.2f}")
