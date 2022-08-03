@@ -1,4 +1,4 @@
-Some experiments in JAX: https://github.com/google/jax
+Some experiments comparing CPU vs Numba vs JAX: https://github.com/google/jax
 
 Dependencies can be installed via
 ```
